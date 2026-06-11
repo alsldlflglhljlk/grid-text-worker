@@ -2,7 +2,9 @@ name: Build Binaries
 
 on:
   push:
-    tags: ["v*"]
+    # Match both "v1.2.3" and bare "1.2.3" tags — releases here are cut as
+    # bare semver (e.g. 0.1.0), which "v*" alone would never trigger on.
+    tags: ["v*", "[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
 
 jobs:

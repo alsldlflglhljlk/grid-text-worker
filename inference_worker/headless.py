@@ -140,8 +140,10 @@ def quick_setup() -> dict:
     config["GRID_API_KEY"] = api_key
 
     # --- Worker name ---
-    worker_name = input("  Worker name [Text-Inference-Worker]: ").strip()
-    config["GRID_WORKER_NAME"] = worker_name or "Text-Inference-Worker"
+    from .config import default_worker_name
+    suggested = default_worker_name()
+    worker_name = input(f"  Worker name [{suggested}]: ").strip()
+    config["GRID_WORKER_NAME"] = worker_name or suggested
 
     # --- Streaming mode ---
     print()

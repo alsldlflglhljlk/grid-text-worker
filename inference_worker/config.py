@@ -1,5 +1,8 @@
 import os
+import re
+import socket
 import sys
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -32,10 +35,36 @@ ENV_FILE = CONFIG_DIR / ".env"
 load_dotenv(ENV_FILE)
 
 
+def default_worker_name() -> str:
+    """A worker name that's stable per-machine but unique across machines.
+
+    The grid keys a worker by its name, so every node defaulting to the same
+    "Text-Inference-Worker" collides — they fight over one identity and stats
+    are meaningless. Derive a stable suffix from the hostname; for generic/empty
+    hostnames fall back to a random id persisted in the config dir so it stays
+    constant across restarts (a name that changes every boot fragments the
+    worker's reputation and uptime).
+    """
+    host = socket.gethostname() or ""
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", host).strip("-")
+    if slug and slug.lower() not in ("localhost", "localhost-localdomain"):
+        return f"Text-Inference-Worker-{slug[:24]}"
+    idfile = CONFIG_DIR / ".worker_id"
+    try:
+        sid = idfile.read_text().strip() if idfile.exists() else ""
+        if not sid:
+            sid = uuid.uuid4().hex[:8]
+            idfile.write_text(sid)
+    except OSError:
+        sid = uuid.uuid4().hex[:8]
+    return f"Text-Inference-Worker-{sid}"
+
+
 class Settings:
     GRID_API_KEY = os.getenv("GRID_API_KEY", "")
-    GRID_WORKER_NAME = os.getenv("GRID_WORKER_NAME", "Text-Inference-Worker")
-    GRID_API_URL = os.getenv("GRID_API_URL", "https://api.aipowergrid.io/api")
+    # `or` (not getenv default) so an explicitly-empty env var still gets a name.
+    GRID_WORKER_NAME = os.getenv("GRID_WORKER_NAME") or default_worker_name()
+    GRID_API_URL = os.getenv("GRID_API_URL", "https://api.aipowergrid.io")
     NSFW = os.getenv("GRID_NSFW", "true").lower() == "true"
     MAX_THREADS = int(os.getenv("GRID_MAX_THREADS", "1"))
     MAX_LENGTH = int(os.getenv("GRID_MAX_LENGTH", "4096"))
