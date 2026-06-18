@@ -56,12 +56,12 @@ result. Ships as a single PyInstaller binary with a browser setup wizard + dashb
 - **Inherit org engineering standards:** `/Users/j/fix-axios-vuln/aipg-documentation/engineering-standards/`
   (core + `git` + the matching language file — `python.md`).
 - **This is a CLIENT of the grid, not the grid.** It speaks the grid's worker protocols only;
-  it never owns coordinator state. The grid's contracts live in `system-core/grid_api`.
+  it never owns coordinator state. The grid's contracts live in `grid-core/grid_api`.
 - **Two transports, same backend bridge:** legacy HTTP polling (`/v2/generate/text/pop` +
   `/submit`, default) and WebSocket streaming (`/v1/workers/ws`, `GRID_STREAMING=true`).
   Keep both in sync when the job shape changes. P2P (`P2P_ENABLED`) is experimental scaffolding.
 - **Config is env-only** via `inference_worker/config.py:Settings`; never read env elsewhere.
-- Run from `system-core`'s prod tree on servers; this repo produces the distributable binary.
+- Run from `grid-core`'s prod tree on servers; this repo produces the distributable binary.
 
 ## Work Guidance
 
