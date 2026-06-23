@@ -66,7 +66,15 @@ class Settings:
     GRID_WORKER_NAME = os.getenv("GRID_WORKER_NAME") or default_worker_name()
     GRID_API_URL = os.getenv("GRID_API_URL", "https://api.aipowergrid.io")
     NSFW = os.getenv("GRID_NSFW", "true").lower() == "true"
+    # Concurrency = number of parallel grid connections this box serves (each is
+    # one in-flight job). Set below your backend's comfortable batch size to
+    # leave headroom for any local app sharing the same vLLM. Default 1 (serial).
     MAX_THREADS = int(os.getenv("GRID_MAX_THREADS", "1"))
+    # Optional time-based throttle. JSON list of windows (operator local time):
+    #   [{"days":"mon-fri","start":"08:00","end":"18:00","concurrency":1},
+    #    {"days":"sat-sun","concurrency":5}]
+    # Outside any window → MAX_THREADS. concurrency:0 = pause (off the grid).
+    GRID_SCHEDULE = os.getenv("GRID_SCHEDULE", "")
     MAX_LENGTH = int(os.getenv("GRID_MAX_LENGTH", "4096"))
     MAX_CONTEXT_LENGTH = int(os.getenv("GRID_MAX_CONTEXT_LENGTH", "4096"))
 
@@ -111,3 +119,73 @@ class Settings:
     def validate(cls):
         if not cls.GRID_API_KEY:
             raise RuntimeError("GRID_API_KEY environment variable is required.")
+
+
+# ── Multi-backend support ─────────────────────────────────────────────────
+# One worker binary can serve SEVERAL (backend, model) pairs at once — e.g. a
+# local vLLM plus a remote endpoint — each advertised to the grid as its own
+# model with its own concurrency. Configure via GRID_BACKENDS (JSON list); if
+# unset, a single backend is built from the classic env vars above (so existing
+# single-model deployments are unchanged).
+from dataclasses import dataclass, field  # noqa: E402
+
+
+@dataclass
+class Backend:
+    name: str             # connection-name base (unique per backend on this host)
+    backend_type: str     # "openai" | "ollama"
+    url: str              # openai base (…/v1) or ollama base
+    api_key: str
+    model_name: str       # model id the backend expects
+    grid_model_name: str  # name advertised to the grid
+    concurrency: int = 1
+    schedule: str = ""    # optional per-backend GRID_SCHEDULE JSON
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-")[:24] or "model"
+
+
+def load_backends() -> list[Backend]:
+    """Return the list of backends this worker serves.
+
+    GRID_BACKENDS = JSON array of objects:
+      [{"type":"openai","url":"https://host/v1","api_key":"sk-…",
+        "model":"Qwen3.6-27B-FP8","grid_model":"qwen3-27b","concurrency":1},
+       {"type":"openai","url":"http://10.0.0.5:8000/v1","model":"gpt-oss-120b",
+        "grid_model":"gpt-oss-120b","concurrency":2}]
+    Fields: type(default openai), url, api_key, model, grid_model(default
+    grid/<model>), concurrency(default 1), schedule, name(default <worker>-<slug>).
+    """
+    raw = os.getenv("GRID_BACKENDS", "").strip()
+    if raw:
+        import json
+        out: list[Backend] = []
+        for s in json.loads(raw):
+            bt = (s.get("type") or "openai").lower()
+            model = s.get("model") or s.get("model_name") or ""
+            grid_model = s.get("grid_model") or s.get("grid_model_name") or f"grid/{model}"
+            default_url = Settings.OLLAMA_URL if bt == "ollama" else Settings.OPENAI_URL
+            out.append(Backend(
+                name=s.get("name") or f"{Settings.GRID_WORKER_NAME}-{_slug(grid_model)}",
+                backend_type=bt,
+                url=s.get("url") or default_url,
+                api_key=s.get("api_key", ""),
+                model_name=model,
+                grid_model_name=grid_model,
+                concurrency=int(s.get("concurrency", 1)),
+                schedule=s.get("schedule", ""),
+            ))
+        if out:
+            return out
+    # Back-compat: a single backend from the classic env vars.
+    return [Backend(
+        name=Settings.GRID_WORKER_NAME,
+        backend_type=Settings.BACKEND_TYPE,
+        url=(Settings.OLLAMA_URL if Settings.BACKEND_TYPE == "ollama" else Settings.OPENAI_URL),
+        api_key=Settings.OPENAI_API_KEY,
+        model_name=Settings.MODEL_NAME,
+        grid_model_name=Settings.GRID_MODEL_NAME or f"grid/{Settings.MODEL_NAME}",
+        concurrency=Settings.MAX_THREADS,
+        schedule=Settings.GRID_SCHEDULE,
+    )]
