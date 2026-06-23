@@ -215,6 +215,27 @@ class StreamingWorker:
         # OpenAI-compatible servers (vLLM/LM Studio/sglang) all expose /models
         return f"{self.spec.url.rstrip('/')}/models"
 
+    async def _detect_context(self) -> int:
+        """Detect this backend's true context window (vLLM max_model_len, Ollama
+        model_info, LM Studio, koboldcpp) so we advertise the model's real limit
+        per backend — not one static number for everything. Falls back to the
+        configured default if the backend doesn't report it."""
+        try:
+            from .detect_backends import get_model_context_length
+            base = self.spec.url.rstrip("/")
+            # detect helper appends /v1/models itself for openai backends.
+            if self.spec.backend_type != "ollama" and base.endswith("/v1"):
+                base = base[:-3]
+            det = await get_model_context_length(
+                base, self.spec.backend_type, self.spec.model_name, self.spec.api_key
+            )
+            ctx = det.get("context_length")
+            if ctx and int(ctx) > 0:
+                return int(ctx)
+        except Exception as e:
+            logger.debug(f"context detection failed: {e}")
+        return Settings.MAX_CONTEXT_LENGTH
+
     async def _backend_healthy(self) -> bool:
         """True iff the local inference backend answers and serves our model.
 
@@ -258,7 +279,15 @@ class StreamingWorker:
         # /v1/messages and /v1/responses to us only if we can actually serve them.
         self.api_formats = await self._probe_formats()
 
-        logger.info(f"Connecting to {self.ws_url}... (formats: {self.api_formats})")
+        # Advertise the backend's REAL context window (auto-detected per model)
+        # instead of a static env guess, so the grid + clients know each model's
+        # true limit. Falls back to the configured default if detection fails.
+        self.max_context = await self._detect_context()
+
+        logger.info(
+            f"Connecting to {self.ws_url}... (formats: {self.api_formats}, "
+            f"ctx={self.max_context})"
+        )
 
         self.ws = await websockets.connect(
             self.ws_url,
@@ -273,7 +302,7 @@ class StreamingWorker:
             "name": self.name,
             "models": [self.grid_model_name],
             "max_length": Settings.MAX_LENGTH,
-            "max_context_length": Settings.MAX_CONTEXT_LENGTH,
+            "max_context_length": getattr(self, "max_context", None) or Settings.MAX_CONTEXT_LENGTH,
             "api_formats": self.api_formats,
             "signer_address": self.signer_address,
             "bridge_agent": BRIDGE_AGENT,
